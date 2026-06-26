@@ -54,8 +54,8 @@ def update_system_version(new_version):
 
 # ---------------- مدیریت کاربران و سطوح دسترسی ----------------
 ALLOWED_USERS = {
-    "1": {"pass": "1", "role": "admin"},
-    "user2": {"pass": "pass2", "role": "user"},
+    "aslasunli": {"pass": "A159372468z", "role": "admin"},
+    "1": {"pass": "1", "role": "user"},
     "user3": {"pass": "pass3", "role": "user"},
 }
 
