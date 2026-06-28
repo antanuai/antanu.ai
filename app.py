@@ -12,100 +12,83 @@ from reportlab.lib.pagesizes import letter
 from reportlab.pdfgen import canvas
 from duckduckgo_search import DDGS
 
-# ---------------- تنظیمات پایگاه داده ----------------
+# --- تنظیمات دیتابیس ---
 def init_db():
     conn = sqlite3.connect("ai_brain.db")
     cursor = conn.cursor()
-    cursor.execute("""CREATE TABLE IF NOT EXISTS knowledge 
-                      (id INTEGER PRIMARY KEY AUTOINCREMENT, question TEXT UNIQUE, answer TEXT, sources TEXT, quality_score INTEGER DEFAULT 5, last_updated TEXT)""")
-    cursor.execute("""CREATE TABLE IF NOT EXISTS system_settings 
-                      (key TEXT PRIMARY KEY, value TEXT)""")
-    # جدول جدید برای مدیریت کاربران و کدهای ۵۰ رقمی
-    cursor.execute("""CREATE TABLE IF NOT EXISTS users_access 
-                      (username TEXT PRIMARY KEY, code50 TEXT UNIQUE, plan_type TEXT)""")
-    cursor.execute("INSERT OR IGNORE INTO system_settings (key, value) VALUES ('version', '2.5.0')")
+    cursor.execute("""CREATE TABLE IF NOT EXISTS knowledge (id INTEGER PRIMARY KEY AUTOINCREMENT, question TEXT UNIQUE, answer TEXT, sources TEXT, last_updated TEXT)""")
+    cursor.execute("""CREATE TABLE IF NOT EXISTS users_access (username TEXT PRIMARY KEY, password TEXT, code50 TEXT UNIQUE, plan_type TEXT)""")
+    cursor.execute("INSERT OR IGNORE INTO users_access (username, password, code50, plan_type) VALUES ('admin', 'admin', 'MASTER_KEY_000', 'admin')")
     conn.commit()
     conn.close()
 
 init_db()
 
-# ---------------- توابع هوش مصنوعی و پردازش ----------------
-def get_system_version():
-    conn = sqlite3.connect("ai_brain.db")
-    cursor = conn.cursor()
-    cursor.execute("SELECT value FROM system_settings WHERE key='version'")
-    row = cursor.fetchone()
-    conn.close()
-    return row[0] if row else "2.5.0"
-
-def search_google_live(query):
-    try:
-        with DDGS(timeout=8) as ddgs:
-            results = [r for r in ddgs.text(query, max_results=5)]
-            if results: return "\n".join([f"منبع: {r['title']} - {r['body']}" for r in results])
-    except: return "خطا در اتصال به گوگل."
-    return "اطلاعاتی یافت نشد."
-
-def call_openrouter(model_id, prompt, max_tokens=4000):
+# --- توابع هوش مصنوعی ---
+def call_openrouter(model_id, prompt):
     url = "https://openrouter.ai/api/v1/chat/completions"
     headers = {"Authorization": f"Bearer {st.secrets.get('OPENROUTER_API_KEY')}", "Content-Type": "application/json"}
-    payload = {"model": model_id, "messages": [{"role": "user", "content": prompt}], "max_tokens": max_tokens}
+    payload = {"model": model_id, "messages": [{"role": "user", "content": prompt}], "max_tokens": 3000}
     try:
         response = requests.post(url, headers=headers, json=payload, timeout=60)
-        if response.status_code == 200: return response.json()['choices'][0]['message']['content']
-    except: pass
-    return ""
+        return response.json()['choices'][0]['message']['content'] if response.status_code == 200 else ""
+    except: return ""
 
 def smart_ai_agent(question, selected_sources):
-    conn = sqlite3.connect("ai_brain.db")
-    cursor = conn.cursor()
-    
-    google_data = search_google_live(question) if "🔎 سرچ زنده گوگل" in selected_sources else ""
-    chatgpt_data = call_openrouter("openai/gpt-4o-mini", question) if "🤖 هوش مصنوعی ChatGPT" in selected_sources else ""
-    gemini_data = call_openrouter("google/gemini-2.5-flash", question) if "🧠 هوش مصنوعی Gemini" in selected_sources else ""
-    
-    final_answer = f"پاسخ تحلیلی بر اساس منابع: {question} \n\n {google_data[:200]}..." 
-    
-    cursor.execute("INSERT OR REPLACE INTO knowledge (question, answer, sources, last_updated) VALUES (?, ?, ?, ?)", 
-                   (question, final_answer, str(selected_sources), datetime.now().strftime("%Y-%m-%d %H:%M")))
-    conn.commit()
-    conn.close()
-    return final_answer, "عملیات موفقیت‌آمیز بود."
+    # ترکیب پاسخ‌ها
+    answer = "پاسخ هوشمند ANTANU: " + call_openrouter("openai/gpt-4o-mini", question)
+    return answer
 
-# ---------------- طراحی رابط کاربری ----------------
+# --- رابط کاربری ---
 st.set_page_config(page_title="ANTANU PRO", layout="wide")
 
-# مدیریت لاگین
 if 'authenticated' not in st.session_state: st.session_state['authenticated'] = False
 
 if not st.session_state['authenticated']:
-    st.title("🔐 ورود به سامانه ANTANU")
-    user = st.text_input("نام کاربری")
-    code = st.text_input("کد ۵۰ رقمی", type="password")
-    if st.button("ورود"):
-        st.session_state['authenticated'] = True
-        st.rerun()
+    tab1, tab2 = st.tabs(["ورود", "ثبت‌نام"])
+    with tab1:
+        user = st.text_input("نام کاربری")
+        pwd = st.text_input("رمز عبور", type="password")
+        if st.button("ورود"):
+            conn = sqlite3.connect("ai_brain.db")
+            user_data = conn.execute("SELECT * FROM users_access WHERE username=? AND password=?", (user, pwd)).fetchone()
+            if user_data:
+                st.session_state['authenticated'] = True
+                st.session_state['username'] = user
+                st.session_state['role'] = 'admin' if user == 'admin' else 'user'
+                st.rerun()
+    with tab2:
+        n_user = st.text_input("یوزرنیم جدید")
+        n_pwd = st.text_input("پسورد جدید", type="password")
+        n_code = st.text_input("کد ۵۰ رقمی")
+        if st.button("ثبت‌نام"):
+            conn = sqlite3.connect("ai_brain.db")
+            try:
+                conn.execute("UPDATE users_access SET username=?, password=? WHERE code50=?", (n_user, n_pwd, n_code))
+                conn.commit()
+                st.success("ثبت‌نام موفق! حالا وارد شوید.")
+            except: st.error("کد نامعتبر است.")
+            conn.close()
 else:
-    st.sidebar.title(f"👤 کاربر: {st.session_state['username']}")
+    # --- پنل اصلی ---
+    st.sidebar.title(f"👤 {st.session_state['username']}")
+    if st.session_state.get('role') == 'admin':
+        if st.sidebar.button("تولید کد ۵۰ رقمی"):
+            new_code = secrets.token_hex(25)
+            conn = sqlite3.connect("ai_brain.db")
+            conn.execute("INSERT INTO users_access (code50) VALUES (?)", (new_code,))
+            conn.commit()
+            st.sidebar.code(new_code)
     
-    # بخش مدیریت ادمین (تولید کد)
-    if st.sidebar.button("تولید کد ۵۰ رقمی جدید"):
-        new_code = secrets.token_hex(25)
-        st.sidebar.code(new_code)
-    
-    # بخش تحلیل آماری فایل
     st.sidebar.write("---")
-    st.sidebar.markdown("### 📊 تحلیل آماری فایل")
-    stat_file = st.sidebar.file_uploader("آپلود اکسل جهت تحلیل", type=['xlsx'])
-    if stat_file:
-        df = pd.read_excel(stat_file)
-        st.write("خلاصه آماری داده‌های شما:", df.describe())
+    file = st.sidebar.file_uploader("تحلیل آماری (Excel)", type=['xlsx'])
+    if file:
+        df = pd.read_excel(file)
+        st.write("خلاصه آماری:", df.describe())
 
-    # هسته اصلی پرسش و پاسخ
-    st.title("🔮 ANTANU Super System")
-    selected_sources = st.multiselect("منابع:", ["🔎 سرچ زنده گوگل", "🤖 هوش مصنوعی ChatGPT", "🧠 هوش مصنوعی Gemini"])
-    user_input = st.text_area("سوال:")
-    
-    if st.button("🚀 پردازش"):
-        ans, msg = smart_ai_agent(user_input, selected_sources)
-        st.markdown(f"<div class='article-box'>{ans}</div>", unsafe_allow_html=True)
+    st.title("🔮 ANTANU System")
+    sources = st.multiselect("منابع:", ["🔎 سرچ گوگل", "🤖 ChatGPT", "🧠 Gemini"])
+    query = st.text_area("سوال:")
+    if st.button("پردازش"):
+        ans = smart_ai_agent(query, sources)
+        st.info(ans)
