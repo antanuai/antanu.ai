@@ -5,7 +5,7 @@ import pandas as pd
 import secrets
 from duckduckgo_search import DDGS
 
-# --- دیتابیس ---
+# --- 1. تنظیمات دیتابیس ---
 def init_db():
     conn = sqlite3.connect("ai_brain.db")
     cursor = conn.cursor()
@@ -17,56 +17,81 @@ def init_db():
 
 init_db()
 
-# --- هسته هوش مصنوعی ---
+# --- 2. هسته هوش مصنوعی ---
 def call_openrouter(messages, selected_sources):
     model_map = {"🤖 ChatGPT": "openai/gpt-4o-mini", "🧠 Gemini": "google/gemini-2.0-flash-001", "🔎 سرچ گوگل": "openai/gpt-4o-mini"}
     final_res = ""
+    prompt = messages[-1]["content"]
+    
     for source in selected_sources:
-        prompt = messages[-1]["content"]
+        current_prompt = prompt
         if source == "🔎 سرچ گوگل":
             with DDGS() as ddgs:
                 res = list(ddgs.text(prompt, max_results=2))
-                prompt = f"جستجو: {res}\nسوال: {prompt}"
+                current_prompt = f"جستجو برای: {prompt}\nنتایج وب: {res}\nپاسخ جامع بده:"
         
         headers = {"Authorization": f"Bearer {st.secrets.get('OPENROUTER_API_KEY')}", "Content-Type": "application/json"}
-        payload = {"model": model_map.get(source, "openai/gpt-4o-mini"), "messages": [{"role": "user", "content": prompt}]}
+        payload = {"model": model_map.get(source, "openai/gpt-4o-mini"), "messages": [{"role": "user", "content": current_prompt}]}
         try:
             r = requests.post("https://openrouter.ai/api/v1/chat/completions", headers=headers, json=payload, timeout=60)
-            final_res += f"**{source}**: {r.json()['choices'][0]['message']['content']}\n\n"
-        except: return "❌ خطا در اتصال به سرور."
+            answer = r.json()['choices'][0]['message']['content']
+            final_res += f"### پاسخ از {source}:\n{answer}\n\n"
+        except: final_res += f"❌ خطا در اتصال به {source}\n"
     return final_res
 
-# --- رابط کاربری ---
+# --- 3. رابط کاربری اصلی ---
 st.set_page_config(page_title="ANTANU System", layout="wide")
-st.image("1.jpg", width=80)
-st.title("ANTANU System")
+col1, col2 = st.columns([1, 8])
+with col1: st.image("1.jpg", width=80)
+with col2: st.title("ANTANU System")
 
-# لاگین
 if 'authenticated' not in st.session_state: st.session_state['authenticated'] = False
 
+# لاگین
 if not st.session_state['authenticated']:
-    # [بخش لاگین قبلی]
-    u = st.text_input("نام کاربری"); p = st.text_input("رمز", type="password")
-    if st.button("ورود"): st.session_state.update({'authenticated': True, 'username': u}); st.rerun()
+    tab1, tab2 = st.tabs(["ورود", "ثبت‌نام"])
+    with tab1:
+        u = st.text_input("نام کاربری")
+        p = st.text_input("رمز عبور", type="password")
+        if st.button("ورود"):
+            st.session_state.update({'authenticated': True, 'username': u, 'role': 'admin' if u == 'admin' else 'user'})
+            st.rerun()
+    with tab2:
+        n_u = st.text_input("یوزرنیم جدید"); n_p = st.text_input("پسورد", type="password"); n_c = st.text_input("کد ۵۰ رقمی")
+        if st.button("ثبت‌نام"):
+            conn = sqlite3.connect("ai_brain.db")
+            try:
+                conn.execute("UPDATE users_access SET username=?, password=? WHERE code50=?", (n_u, n_p, n_c))
+                conn.commit()
+                st.success("ثبت‌نام موفق!")
+            except: st.error("کد اشتباه است.")
+            conn.close()
 else:
     # سایدبار
     with st.sidebar:
+        st.write(f"👤 کاربر: {st.session_state['username']}")
         selected_sources = st.multiselect("منابع:", ["🔎 سرچ گوگل", "🤖 ChatGPT", "🧠 Gemini"], default=["🤖 ChatGPT"])
-        if st.button("🔗 اشتراک‌گذاری این چت"):
+        if st.session_state.get('role') == 'admin' and st.button("تولید کد ۵۰ رقمی جدید"):
+            code = secrets.token_hex(25)
+            sqlite3.connect("ai_brain.db").execute("INSERT OR IGNORE INTO users_access (code50, plan_type) VALUES (?, ?)", (code, 'user')).connection.commit()
+            st.code(code)
+        
+        file = st.file_uploader("تحلیل آماری (Excel)", type=['xlsx'])
+        if file: st.write(pd.read_excel(file).describe())
+        
+        if st.button("🔗 اشتراک‌گذاری چت"):
             share_id = secrets.token_urlsafe(8)
             conn = sqlite3.connect("ai_brain.db")
             conn.execute("INSERT INTO shared_chats VALUES (?, ?)", (share_id, str(st.session_state.messages)))
-            conn.commit()
-            st.success(f"لینک چت: {st.request.host}/?share={share_id}")
+            conn.commit(); conn.close()
+            st.success(f"لینک: https://antanuai-9eejbkncmghnkvhgfikz.streamlit.app/?share={share_id}")
 
-    # مدیریت چت
+    # چت
     if "messages" not in st.session_state: st.session_state.messages = []
-    
-    # نمایش پیام‌ها
     for msg in st.session_state.messages:
         with st.chat_message(msg["role"]): st.markdown(msg["content"])
 
-    if prompt := st.chat_input("سوال..."):
+    if prompt := st.chat_input("سوال خود را بپرسید..."):
         st.session_state.messages.append({"role": "user", "content": prompt})
         with st.chat_message("user"): st.markdown(prompt)
         with st.chat_message("assistant"):
@@ -74,9 +99,8 @@ else:
             st.markdown(response)
         st.session_state.messages.append({"role": "assistant", "content": response})
 
-# --- قابلیت اشتراک‌گذاری ---
-params = st.query_params
-if "share" in params:
+# بررسی اشتراک‌گذاری
+if "share" in st.query_params:
     conn = sqlite3.connect("ai_brain.db")
-    chat = conn.execute("SELECT content FROM shared_chats WHERE share_id=?", (params["share"],)).fetchone()
-    if chat: st.info(f"شما در حال مشاهده چت به اشتراک گذاشته شده هستید: {chat[0]}")
+    chat = conn.execute("SELECT content FROM shared_chats WHERE share_id=?", (st.query_params["share"],)).fetchone()
+    if chat: st.info(f"محتوای چت اشتراکی: {chat[0]}")
